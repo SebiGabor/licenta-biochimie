@@ -1,19 +1,24 @@
+const supabaseUrl = 'https://reoxcxirvtmoexwgayoq.supabase.co';
+const supabaseKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJlb3hjeGlydnRtb2V4d2dheW9xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM2OTgzNDcsImV4cCI6MjA5OTI3NDM0N30.HvoX0VHDeWWDssrCo_duxYnciLhq1ZLjKWa6VZU9JMo';
+const supabaseClient = window.supabase.createClient(supabaseUrl, supabaseKey);
+
 const DB_KEY = 'biochimie_app_data';
+const RECORD_ID = 'progres_unic'; // ID-ul fix folosit pentru salvarea datelor s妹
 
 const defaultState = {
     history: [],
     training: {
         currentIteration: 1,
         answeredIds: [],
-        wrongStats: {} // format: { questionId: { count: N, iterations: [1, 2] } }
+        wrongStats: {}
     }
 };
 
 class App {
     constructor() {
         this.grile = [];
-        this.state = this.loadState();
-        this.currentView = 'home';
+        this.state = JSON.parse(JSON.stringify(defaultState));
+        this.currentView = 'loading';
         this.currentQuiz = null;
 
         this.init();
@@ -21,22 +26,60 @@ class App {
 
     async init() {
         try {
+            // 1. Încărcăm grilele din JSON
             const response = await fetch('Grile.json');
             this.grile = await response.json();
-            this.render();
+
+            // 2. Încărcăm direct progresul din cloud
+            await this.loadStateFromCloud();
+
+            // 3. Mergem direct pe pagina principală
+            this.navigate('home');
         } catch (error) {
-            document.getElementById('app-content').innerHTML = '<div class="card">Eroare la încărcarea Grile.json. Asigură-te că rulezi site-ul pe un server (ex: Live Server sau GitHub Pages), nu direct din file://</div>';
+            document.getElementById('app-content').innerHTML = '<div class="card">Eroare la pornirea aplicației. Verificați conexiunea la internet.</div>';
         }
     }
 
-    loadState() {
-        const saved = localStorage.getItem(DB_KEY);
-        return saved ? JSON.parse(saved) : JSON.parse(JSON.stringify(defaultState));
+    // --- CLOUD SYNC SIMPLIFICAT ---
+
+    async loadStateFromCloud() {
+        try {
+            const { data, error } = await supabaseClient
+                .from('user_sync')
+                .select('state_data')
+                .eq('id', RECORD_ID)
+                .maybeSingle(); // Returnează null dacă rândul nu există încă
+
+            if (data && data.state_data) {
+                this.state = data.state_data;
+            } else {
+                // Dacă e prima rulare absolută și nu există în cloud, verificăm dacă are ceva salvat local în browser
+                const localSaved = localStorage.getItem(DB_KEY);
+                this.state = localSaved ? JSON.parse(localSaved) : JSON.parse(JSON.stringify(defaultState));
+                this.saveState(); // Creăm rândul în cloud
+            }
+        } catch (e) {
+            console.error("Eroare la citirea din cloud, trecem pe salvare locală:", e);
+            const localSaved = localStorage.getItem(DB_KEY);
+            this.state = localSaved ? JSON.parse(localSaved) : JSON.parse(JSON.stringify(defaultState));
+        }
     }
 
     saveState() {
+        // Salvare rapidă locală în browser (cache în caz de offline temporar)
         localStorage.setItem(DB_KEY, JSON.stringify(this.state));
+
+        // Actualizare asincronă în baza de date cloud
+        supabaseClient.from('user_sync').upsert({
+            id: RECORD_ID,
+            state_data: this.state,
+            updated_at: new Date()
+        }).then(({error}) => {
+            if(error) console.error("Eroare la sincronizarea în cloud:", error);
+        });
     }
+
+    // --- NAVIGARE ȘI VEDERI ---
 
     navigate(view, params = {}) {
         this.currentView = view;
@@ -52,8 +95,6 @@ class App {
         else if (this.currentView === 'quiz') this.initQuiz(container, params);
         else if (this.currentView === 'statistici') container.innerHTML = this.viewStats();
     }
-
-    // --- VIEWS ---
 
     viewHome() {
         return `
@@ -72,7 +113,7 @@ class App {
                         Antrenament (${this.state.training.answeredIds.length}/${this.grile.length})
                     </button>
                     <button class="secondary" onclick="app.navigate('statistici')">
-                        Statistici & Sincronizare
+                        Statistici & Progres
                     </button>
                 </div>
             </div>
@@ -144,14 +185,6 @@ class App {
                      <button class="danger" onclick="app.resetTraining()">Resetare Antrenament</button>
                 </div>
             </div>
-            
-            <div class="sync-box">
-                <h3>Sincronizare Dispozitive</h3>
-                <p style="font-size: 0.9rem; margin-bottom: 0.5rem;">Copiați codul de mai jos pentru a muta progresul pe alt dispozitiv.</p>
-                <button class="secondary" onclick="app.exportData()">Generează Cod Export</button>
-                <textarea id="syncData" placeholder="Lipește aici codul de import..."></textarea>
-                <button onclick="app.importData()">Importă Date</button>
-            </div>
         `;
     }
 
@@ -159,7 +192,7 @@ class App {
 
     initQuiz(container, params) {
         let questions = [];
-        let totalTime = 0; // seconds
+        let totalTime = 0;
 
         if (params.type === 'antrenament') {
             const available = this.grile.filter(g => !this.state.training.answeredIds.includes(g.numar_intrebare));
@@ -172,7 +205,7 @@ class App {
                 return;
             }
             questions = this.shuffleArray(available);
-            totalTime = null; // no timer for training
+            totalTime = null;
         } else {
             questions = this.shuffleArray([...this.grile]).slice(0, params.count);
             totalTime = (params.count * 180 / 100) * 60;
@@ -240,11 +273,9 @@ class App {
         const q = qz.questions[qz.currentIndex];
         const isCorrect = selectedKey === q.raspuns_corect;
 
-        // Disable clicks
         document.querySelectorAll('.option').forEach(el => el.classList.add('disabled'));
         document.getElementById(`opt-${selectedKey}`).onclick = null;
 
-        // Visual feedback
         document.getElementById(`opt-${q.raspuns_corect}`).classList.add('correct');
         if (!isCorrect) {
             document.getElementById(`opt-${selectedKey}`).classList.add('wrong');
@@ -252,7 +283,6 @@ class App {
             qz.correctCount++;
         }
 
-        // Logic for Training
         if (qz.type === 'antrenament') {
             this.state.training.answeredIds.push(q.numar_intrebare);
             if (!isCorrect) {
@@ -303,34 +333,11 @@ class App {
         this.currentQuiz = null;
     }
 
-    // --- UTILS ---
-
     resetTraining() {
-        if (confirm('Ești sigur că vrei să resetezi complet progresul antrenamentului curent? Istoricul greșelilor se va păstra, dar vei relua iterația curentă de la zero.')) {
+        if (confirm('Ești sigur că vrei să resetezi complet progresul antrenamentului curent?')) {
             this.state.training.answeredIds = [];
             this.saveState();
             this.render();
-        }
-    }
-
-    exportData() {
-        const data = btoa(JSON.stringify(this.state));
-        document.getElementById('syncData').value = data;
-    }
-
-    importData() {
-        const input = document.getElementById('syncData').value.trim();
-        if (!input) return;
-        try {
-            const parsed = JSON.parse(atob(input));
-            if (parsed && parsed.training) {
-                this.state = parsed;
-                this.saveState();
-                alert('Date sincronizate cu succes!');
-                this.render();
-            }
-        } catch (e) {
-            alert('Cod invalid. Sincronizarea a eșuat.');
         }
     }
 
@@ -349,5 +356,4 @@ class App {
     }
 }
 
-// Inițializare aplicație
 const app = new App();

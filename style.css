@@ -93,3 +93,20 @@ th { background-color: var(--bg); font-weight: 600; }
     .grid-buttons { grid-template-columns: 1fr; }
     .card { padding: 1.5rem; }
 }
+
+.auth-box {
+    max-width: 400px;
+    margin: 2rem auto;
+    text-align: center;
+}
+.auth-box input {
+    width: 100%;
+    padding: 0.75rem;
+    margin-bottom: 1rem;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+}
+.auth-box button {
+    width: 100%;
+    margin-bottom: 0.5rem;
+}
